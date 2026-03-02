@@ -1,10 +1,8 @@
 import { useState, useRef } from "react";
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIGURATION — swap in your real Gemini key here for production
-// Get yours free at: https://aistudio.google.com/app/apikey
-// ─────────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "YOAIzaSyDwutl9a5ImjCRO-E0noi0CqDf_q6Ieg4k"; // ← paste your key once, users never see it
+const GEMINI_API_KEY = "AIzaSyBDERnPZJSB0OaPIJtCQM3JDFEwjSowru8"; 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMPLATES
