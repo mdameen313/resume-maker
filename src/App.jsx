@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "AIzaSyBDERnPZJSB0OaPIJtCQM3JDFEwjSowru8"; 
+const GEMINI_API_KEY = "ADD YOUR OWN DAMN KEY MAN"; 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMPLATES
