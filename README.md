@@ -39,10 +39,4 @@ This logic has been cleanly modularized for easy adaptation:
 *   `src/components/forms/`: Individual topic forms (`Personal`, `Education`, etc.)
 *   `src/App.jsx`: The top-level state manager. LocalStorage hooks, step-routing, and the `ResumeDocument` HTML/CSS printing templates live here.
 
-## 📈 Monetization & Roadmap Ideas
-If you are planning to launch this as a product, consider adding:
-1.  **More Templates:** Add columns, timelines, and modern colorful variations.
-2.  **Tailwind CSS Migration:** Standardize the styling to Tailwind for even easier component building.
-3.  **Authentication/Database:** Swap `localStorage` with Supabase/Firebase if you want to charge a monthly subscription for cloud storage instead of selling the tool upfront.
 
-Enjoy building and iterating over the source!
