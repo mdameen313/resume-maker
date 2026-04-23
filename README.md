@@ -1,6 +1,6 @@
-# 🚀 AI Resume Builder SaaS Boilerplate
+# 🚀 AI Resume Builder
 
-Welcome to the **AI Resume Builder SaaS Boilerplate!** This codebase is a fully functional, highly premium React application designed to let you instantly launch a Resume-building micro-SaaS or add an advanced resume generation feature to your existing platform.
+Welcome to the **AI Resume Builder!** This codebase is a fully functional, highly premium React application designed to let you instantly launch a resume builder or an advanced resume generation feature to your existing platform.
 
 It is entirely client-side, lightning-fast, and powered by the Groq API for near-instant AI text processing.
 
