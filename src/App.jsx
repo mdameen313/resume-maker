@@ -1,9 +1,22 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import * as pdfjsLib from 'pdfjs-dist';
+import { Input, Btn, Chip, SL, Card } from "./components/ui/UI";
+import Personal from "./components/forms/Personal";
+import Education, { emptyEdu } from "./components/forms/Education";
+import Skills from "./components/forms/Skills";
+import Projects, { emptyProj } from "./components/forms/Projects";
+import Certifications, { emptyCert } from "./components/forms/Certifications";
+import Strengths, { emptyStr } from "./components/forms/Strengths";
+import Experience, { emptyExp } from "./components/forms/Experience";
+import PreviewGate from "./components/forms/PreviewGate";
+import Settings from "./components/forms/Settings";
+import CoverLetter from "./components/forms/CoverLetter";
+import CustomModeForm from "./components/forms/CustomModeForm";
 
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 // ─────────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "ADD YOUR OWN DAMN KEY MAN"; 
-
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 // ─────────────────────────────────────────────────────────────────────────────
 // TEMPLATES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,23 +71,49 @@ const TEMPLATES = [
 // ─────────────────────────────────────────────────────────────────────────────
 // STEPS  (Projects & Certifications added to match Nithin's resume)
 // ─────────────────────────────────────────────────────────────────────────────
-const STEPS = [
-  { id: "personal",      label: "Personal Info",    icon: "👤" },
-  { id: "education",     label: "Education",        icon: "🎓" },
-  { id: "skills",        label: "Technical Skills", icon: "⚡" },
-  { id: "projects",      label: "Projects",         icon: "🚀" },
-  { id: "certifications",label: "Certifications",   icon: "🏅" },
-  { id: "strengths",     label: "Key Strengths",    icon: "💪" },
-  { id: "experience",    label: "Experience",       icon: "💼" },
-  { id: "preview",       label: "Preview & Export", icon: "📄" },
+const ALL_SECTIONS = [
+  { id: "education", label: "Education", icon: "🎓" },
+  { id: "skills", label: "Technical Skills", icon: "⚡" },
+  { id: "projects", label: "Projects", icon: "🚀" },
+  { id: "certifications", label: "Certifications", icon: "🏅" },
+  { id: "strengths", label: "Key Strengths", icon: "💪" },
+  { id: "experience", label: "Experience", icon: "💼" },
 ];
+const getSteps = (sectionOrder = [], customSections = [], isCustomMode = false) => {
+  const top = [
+    { id: "settings", label: "App Settings", icon: "⚙️" },
+    { id: "personal", label: "Personal Info", icon: "👤" }
+  ];
+  const bottom = [
+    { id: "coverletter", label: "Cover Letter", icon: "📝" },
+    { id: "preview", label: "Preview & Export", icon: "📄" }
+  ];
+  
+  if (isCustomMode) {
+    const customOrdered = customSections.map((sec, idx) => ({
+      id: `custom_${idx}`,
+      label: sec.headingTitle || `Unnamed Section`,
+      icon: "✨",
+      isCustom: true,
+      index: idx
+    }));
+    return [...top, ...customOrdered, ...bottom];
+  }
+  
+  // Create ordered sections from sectionOrder
+  const orderedSections = sectionOrder
+    .map(id => ALL_SECTIONS.find(s => s.id === id))
+    .filter(Boolean);
+    
+  return [...top, ...orderedSections, ...bottom];
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI SUMMARY  — uses the baked-in key, no user prompt
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateSummaryAI(data) {
+async function generateSummaryAI(data, groqKey) {
   const projectList = (data.projects || []).map(p => p.name).filter(Boolean).join(", ");
-  const certList    = (data.certifications || []).map(c => c.name).filter(Boolean).join(", ");
+  const certList = (data.certifications || []).map(c => c.name).filter(Boolean).join(", ");
   const prompt = `You are a professional resume writer. Write a concise 3–4 sentence Professional Summary for this candidate's resume:
 
 Name: ${data.name}
@@ -94,27 +133,114 @@ Instructions:
 - NEVER use: results-driven, dynamic, passionate, hardworking, motivated, team player
 - Output ONLY the summary paragraph — no labels, no bullets, no explanation`;
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 400, temperature: 0.7 },
-      }),
-    }
-  );
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.1-8b-instant",
+      temperature: 0.7,
+    })
+  });
   const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+  return json.choices[0].message.content.trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORT FROM PDF LOCALLY (NO API KEY REQUIRED)
+// ─────────────────────────────────────────────────────────────────────────────
+async function extractResumeFromPdfLocal(base64Pdf, groqKey) {
+  const binaryString = window.atob(base64Pdf);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+
+  const loadingTask = pdfjsLib.getDocument({ data: bytes });
+  const pdf = await loadingTask.promise;
+  let text = "";
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+
+    let lastY = -1;
+    for (const item of textContent.items) {
+      // If the Y coordinate changes noticeably, we are on a new line
+      if (lastY !== -1 && Math.abs(lastY - item.transform[5]) > 4) {
+        text += "\n";
+      }
+      text += item.str + " ";
+      lastY = item.transform[5];
+    }
+    text += "\n\n";
+  }
+
+  // Clean up excessive spaces
+  text = text.replace(/ +/g, " ");
+
+  const prompt = `You are an expert resume parser. Extract the information from the following raw PDF text and format it as a valid JSON object matching this structure EXACTLY:
+{
+  "name": "Full Name",
+  "title": "Professional Title (guess based on exp/summary if missing)",
+  "email": "Email Address",
+  "phone": "Phone Number",
+  "location": "City, Country",
+  "linkedin": "LinkedIn URL",
+  "github": "GitHub URL",
+  "summary": "Professional Summary",
+  "skills": "Technical Skills. Format EACH line precisely as 'Category: skill1, skill2'. VERY IMPORTANT: Use categories.",
+  "languages": "Languages spoken",
+  "education": [
+    { "institution": "Name", "degree": "Degree", "location": "Location", "start": "Start Date", "end": "End Date", "gpa": "GPA" }
+  ],
+  "projects": [
+    { "name": "Project Name", "tech": "Stack", "date": "Date", "badge": "Link", "bullets": "Bullet points, one per line" }
+  ],
+  "certifications": [
+    { "name": "Name", "description": "Description" }
+  ],
+  "strengths": [
+    { "title": "Strength Title", "description": "Short detail" }
+  ],
+  "experience": [
+    { "title": "Job Title", "company": "Company", "location": "Location", "start": "Start Date", "end": "End Date", "bullets": "Achievements, one per line" }
+  ]
+}
+
+Return ONLY perfect valid JSON.
+
+RESUME TEXT:
+"""
+${text.slice(0, 7000)}
+"""`;
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${groqKey}`
+    },
+    body: JSON.stringify({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.1-8b-instant",
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    })
+  });
+
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+
+  return JSON.parse(json.choices[0].message.content.trim());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RESUME DOCUMENT RENDERER
 // This is the actual A4 sheet — 4 template variants
 // ─────────────────────────────────────────────────────────────────────────────
-function ResumeDocument({ data, template }) {
+function ResumeDocument({ data, template, isCustomMode }) {
   const T = TEMPLATES.find(t => t.id === template) || TEMPLATES[0];
   const ff = T.serif ? "'Georgia', 'Times New Roman', serif" : "'Arial', 'Helvetica', sans-serif";
 
@@ -135,16 +261,16 @@ function ResumeDocument({ data, template }) {
   const contactItems = [
     data.phone, data.email,
     data.linkedin || null,
-    data.github   || null,
+    data.github || null,
     data.location || null,
   ].filter(Boolean);
 
-  const isModern    = template === "modern";
+  const isModern = template === "modern";
   const isExecutive = template === "executive";
-  const isMinimal   = template === "minimal";
+  const isMinimal = template === "minimal";
 
-  const headerPad  = isModern ? "18px 24px 16px" : "20px 24px 14px";
-  const headerBg   = T.headerBg   || "transparent";
+  const headerPad = isModern ? "18px 24px 16px" : "20px 24px 14px";
+  const headerBg = T.headerBg || "transparent";
   const headerText = T.headerText || "#111";
   const headerBorderBottom = isExecutive ? T.headerBorder
     : isModern ? "none" : "none";
@@ -207,140 +333,172 @@ function ResumeDocument({ data, template }) {
       {/* ── BODY ── */}
       <div style={{ padding: "2px 24px 24px" }}>
 
-        {/* Education */}
-        {(data.education || []).some(e => e.degree || e.institution) && (
-          <>
-            <Sec title="Education" />
-            {(data.education || []).map((e, i) => (e.degree || e.institution) && (
-              <div key={i} style={{ marginBottom: 6 }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>{e.institution}</span>
-                  <span style={{ fontSize: "8.5pt", color: "#555" }}>{e.location}</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: "9pt", fontStyle: "italic", color: T.subColor }}>{e.degree}</span>
-                  <span style={{ fontSize: "8.5pt", color: "#555" }}>
-                    {e.start && e.end ? `${e.start} – ${e.end}` : e.year || ""}
-                  </span>
-                </div>
-                {e.gpa && <div style={{ fontSize: "8.5pt", color: "#666" }}>GPA: {e.gpa}</div>}
-              </div>
-            ))}
-          </>
-        )}
-
-        {/* Technical Skills — category: items format */}
-        {data.skills && (
-          <>
-            <Sec title="Technical Skills" />
-            <div style={{ fontSize: "9pt", lineHeight: 1.6 }}>
-              {skillLines.map((line, i) => {
-                const colonIdx = line.indexOf(":");
-                if (colonIdx !== -1) {
-                  const cat = line.slice(0, colonIdx + 1).trim();
-                  const val = line.slice(colonIdx + 1).trim();
-                  return (
-                    <div key={i}>
-                      <span style={{ fontWeight: 700 }}>{cat}</span>
-                      {" "}{val}
+        {/* Render dynamically ordered standard sections or custom sections */}
+        {isCustomMode ? (
+          (data.customSections || []).map((sec, secIdx) => (
+            <div key={`custom-${secIdx}`}>
+              {sec.headingTitle && <Sec title={sec.headingTitle} />}
+              {(sec.items || []).map((item, i) => (
+                <div key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>
+                      {item.title}
+                    </span>
+                    <span style={{ fontSize: "8.5pt", color: "#555", whiteSpace: "nowrap", marginLeft: 8 }}>
+                      {item.rightText}
+                    </span>
+                  </div>
+                  {(item.subtitle) && (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "9pt", color: T.subColor, fontStyle: "italic" }}>{item.subtitle}</span>
                     </div>
-                  );
-                }
-                return <div key={i}>{line}</div>;
-              })}
+                  )}
+                  {item.bullets && (
+                    <ul style={{ margin: "3px 0 0", paddingLeft: 15 }}>
+                      {item.bullets.split("\n").filter(Boolean).map((b, j) => (
+                        <li key={j} style={{ fontSize: "9pt", color: "#222", marginBottom: 1.5, lineHeight: 1.4 }}>
+                          {b.replace(/^[-•]\s*/, "")}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
             </div>
-          </>
-        )}
-
-        {/* Projects */}
-        {(data.projects || []).some(p => p.name) && (
-          <>
-            <Sec title="Projects & Research" />
-            {(data.projects || []).map((p, i) => p.name && (
-              <div key={i} style={{ marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>
-                    {p.name}
-                    {p.tech && (
-                      <span style={{ fontWeight: 400, fontStyle: "italic", color: "#555" }}>
-                        {" "}| {p.tech}
+          ))
+        ) : (
+          (data.sectionOrder || ['education', 'skills', 'projects', 'certifications', 'strengths', 'experience']).map(secId => {
+            if (secId === "education" && (data.education || []).some(e => e.degree || e.institution)) return (
+              <div key="edu">
+                <Sec title="Education" />
+                {(data.education || []).map((e, i) => (e.degree || e.institution) && (
+                  <div key={i} style={{ marginBottom: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>{e.institution}</span>
+                      <span style={{ fontSize: "8.5pt", color: "#555" }}>{e.location}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "9pt", fontStyle: "italic", color: T.subColor }}>{e.degree}</span>
+                      <span style={{ fontSize: "8.5pt", color: "#555" }}>
+                        {e.start && e.end ? `${e.start} – ${e.end}` : e.year || ""}
                       </span>
+                    </div>
+                    {e.gpa && <div style={{ fontSize: "8.5pt", color: "#666" }}>GPA: {e.gpa}</div>}
+                  </div>
+                ))}
+              </div>
+            );
+            
+            if (secId === "skills" && data.skills) return (
+              <div key="skills">
+                <Sec title="Technical Skills" />
+                <div style={{ fontSize: "9pt", lineHeight: 1.6 }}>
+                  {skillLines.map((line, i) => {
+                    const colonIdx = line.indexOf(":");
+                    if (colonIdx !== -1) {
+                      const cat = line.slice(0, colonIdx + 1).trim();
+                      const val = line.slice(colonIdx + 1).trim();
+                      return (
+                        <div key={i}>
+                          <span style={{ fontWeight: 700 }}>{cat}</span>
+                          {" "}{val}
+                        </div>
+                      );
+                    }
+                    return <div key={i}>{line}</div>;
+                  })}
+                </div>
+              </div>
+            );
+            
+            if (secId === "projects" && (data.projects || []).some(p => p.name)) return (
+              <div key="proj">
+                <Sec title="Projects & Research" />
+                {(data.projects || []).map((p, i) => p.name && (
+                  <div key={i} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                      <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>
+                        {p.name}
+                        {p.tech && (
+                          <span style={{ fontWeight: 400, fontStyle: "italic", color: "#555" }}>
+                            {" "}| {p.tech}
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: "8.5pt", color: "#555", whiteSpace: "nowrap", marginLeft: 8 }}>
+                        {p.badge || p.date}
+                      </span>
+                    </div>
+                    {p.bullets && (
+                      <ul style={{ margin: "3px 0 0", paddingLeft: 15 }}>
+                        {p.bullets.split("\n").filter(Boolean).map((b, j) => (
+                          <li key={j} style={{ fontSize: "9pt", color: "#222", marginBottom: 1.5, lineHeight: 1.4 }}>
+                            {b.replace(/^[-•]\s*/, "")}
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </span>
-                  <span style={{ fontSize: "8.5pt", color: "#555", whiteSpace: "nowrap", marginLeft: 8 }}>
-                    {p.badge || p.date}
-                  </span>
-                </div>
-                {p.bullets && (
-                  <ul style={{ margin: "3px 0 0", paddingLeft: 15 }}>
-                    {p.bullets.split("\n").filter(Boolean).map((b, j) => (
-                      <li key={j} style={{ fontSize: "9pt", color: "#222", marginBottom: 1.5, lineHeight: 1.4 }}>
-                        {b.replace(/^[-•]\s*/, "")}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </>
-        )}
-
-        {/* Certifications */}
-        {(data.certifications || []).some(c => c.name) && (
-          <>
-            <Sec title="Certifications" />
-            {(data.certifications || []).map((c, i) => c.name && (
-              <div key={i} style={{ marginBottom: 5, fontSize: "9pt" }}>
-                <span style={{ fontWeight: 700 }}>{c.name}</span>
-                {c.description && (
-                  <span style={{ color: "#555" }}>: {c.description}</span>
-                )}
+            );
+            
+            if (secId === "certifications" && (data.certifications || []).some(c => c.name)) return (
+              <div key="cert">
+                <Sec title="Certifications" />
+                {(data.certifications || []).map((c, i) => c.name && (
+                  <div key={i} style={{ marginBottom: 5, fontSize: "9pt" }}>
+                    <span style={{ fontWeight: 700 }}>{c.name}</span>
+                    {c.description && (
+                      <span style={{ color: "#555" }}>: {c.description}</span>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </>
-        )}
-
-        {/* Key Strengths */}
-        {(data.strengths || []).some(s => s.title) && (
-          <>
-            <Sec title="Key Strengths" />
-            {(data.strengths || []).map((s, i) => s.title && (
-              <div key={i} style={{ marginBottom: 4, fontSize: "9pt" }}>
-                <span style={{ fontWeight: 700 }}>{s.title}</span>
-                {s.description && <span style={{ color: "#333" }}>: {s.description}</span>}
+            );
+            
+            if (secId === "strengths" && (data.strengths || []).some(s => s.title)) return (
+              <div key="str">
+                <Sec title="Key Strengths" />
+                {(data.strengths || []).map((s, i) => s.title && (
+                  <div key={i} style={{ marginBottom: 4, fontSize: "9pt" }}>
+                    <span style={{ fontWeight: 700 }}>{s.title}</span>
+                    {s.description && <span style={{ color: "#333" }}>: {s.description}</span>}
+                  </div>
+                ))}
               </div>
-            ))}
-          </>
-        )}
-
-        {/* Work Experience */}
-        {(data.experience || []).some(e => e.title || e.company) && (
-          <>
-            <Sec title="Work Experience" />
-            {(data.experience || []).map((exp, i) => (exp.title || exp.company) && (
-              <div key={i} style={{ marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>{exp.title}</span>
-                  <span style={{ fontSize: "8.5pt", color: "#555", whiteSpace: "nowrap", marginLeft: 8 }}>
-                    {exp.start}{exp.start && exp.end ? " – " : ""}{exp.end}
-                  </span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: "9pt", color: T.subColor, fontStyle: "italic" }}>{exp.company}</span>
-                  {exp.location && <span style={{ fontSize: "8.5pt", color: "#777" }}>{exp.location}</span>}
-                </div>
-                {exp.bullets && (
-                  <ul style={{ margin: "3px 0 0", paddingLeft: 15 }}>
-                    {exp.bullets.split("\n").filter(Boolean).map((b, j) => (
-                      <li key={j} style={{ fontSize: "9pt", color: "#222", marginBottom: 1.5, lineHeight: 1.4 }}>
-                        {b.replace(/^[-•]\s*/, "")}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+            );
+            
+            if (secId === "experience" && (data.experience || []).some(e => e.title || e.company)) return (
+              <div key="exp">
+                <Sec title="Work Experience" />
+                {(data.experience || []).map((exp, i) => (exp.title || exp.company) && (
+                  <div key={i} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                      <span style={{ fontWeight: 700, fontSize: "9.5pt" }}>{exp.title}</span>
+                      <span style={{ fontSize: "8.5pt", color: "#555", whiteSpace: "nowrap", marginLeft: 8 }}>
+                        {exp.start}{exp.start && exp.end ? " – " : ""}{exp.end}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "9pt", color: T.subColor, fontStyle: "italic" }}>{exp.company}</span>
+                      {exp.location && <span style={{ fontSize: "8.5pt", color: "#777" }}>{exp.location}</span>}
+                    </div>
+                    {exp.bullets && (
+                      <ul style={{ margin: "3px 0 0", paddingLeft: 15 }}>
+                        {exp.bullets.split("\n").filter(Boolean).map((b, j) => (
+                          <li key={j} style={{ fontSize: "9pt", color: "#222", marginBottom: 1.5, lineHeight: 1.4 }}>
+                            {b.replace(/^[-•]\s*/, "")}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </>
+            );
+            return null;
+          })
         )}
 
         {/* Languages */}
@@ -367,118 +525,139 @@ function ResumeDocument({ data, template }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI PRIMITIVES
-// ─────────────────────────────────────────────────────────────────────────────
-const iS = {
-  width: "100%", background: "#0c0f15", border: "1px solid #1e2a3a",
-  borderRadius: 7, color: "#dde3ec", padding: "8px 12px", fontSize: 13,
-  outline: "none", fontFamily: "inherit", boxSizing: "border-box", resize: "vertical",
-};
-
-function Input({ label, value, onChange, placeholder, type = "text", rows, hint }) {
-  return (
-    <div style={{ marginBottom: 12 }}>
-      {label && <label style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: "#7a90a8", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</label>}
-      {rows
-        ? <textarea value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows} style={iS} />
-        : <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={iS} />
-      }
-      {hint && <div style={{ fontSize: 10.5, color: "#4a6080", marginTop: 3 }}>{hint}</div>}
-    </div>
-  );
-}
-
-function Btn({ children, onClick, v = "primary", disabled, sm, full, loading }) {
-  const vs = {
-    primary: { background: "linear-gradient(135deg,#4f46e5,#7c3aed)", color: "#fff" },
-    secondary: { background: "#151c27", color: "#7a90a8", border: "1px solid #1e2a3a" },
-    ghost: { background: "transparent", color: "#6366f1", border: "1px solid #4f46e5" },
-    danger: { background: "#200f0f", color: "#f87171" },
-    green: { background: "linear-gradient(135deg,#065f46,#059669)", color: "#fff" },
-    dark: { background: "#0c0f15", color: "#94a3b8", border: "1px solid #1e2a3a" },
-  };
-  return (
-    <button onClick={onClick} disabled={disabled || loading} style={{
-      border: "none", borderRadius: 7,
-      padding: sm ? "5px 13px" : "9px 20px",
-      fontSize: sm ? 11.5 : 13.5, fontWeight: 600,
-      cursor: (disabled || loading) ? "not-allowed" : "pointer",
-      opacity: (disabled || loading) ? 0.55 : 1,
-      fontFamily: "inherit", whiteSpace: "nowrap",
-      width: full ? "100%" : "auto",
-      display: full ? "block" : "inline-block",
-      ...vs[v],
-    }}>
-      {loading ? "⏳ Please wait..." : children}
-    </button>
-  );
-}
-
-function Chip({ label, onRemove }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#151c27", border: "1px solid #1e2a3a", borderRadius: 20, padding: "3px 10px", fontSize: 12, color: "#94a3b8", margin: "3px 4px 3px 0" }}>
-      {label}
-      <span onClick={onRemove} style={{ cursor: "pointer", color: "#6366f1", fontWeight: 700, fontSize: 13, lineHeight: 1 }}>×</span>
-    </span>
-  );
-}
-
-function SL({ children }) {
-  return <div style={{ fontSize: 10, fontWeight: 700, color: "#4f46e5", textTransform: "uppercase", letterSpacing: "0.1em", marginTop: 18, marginBottom: 8, paddingTop: 14, borderTop: "1px solid #151c27" }}>{children}</div>;
-}
-
-function Card({ children, style }) {
-  return <div style={{ background: "#0c0f15", border: "1px solid #1e2a3a", borderRadius: 9, padding: 14, marginBottom: 14, ...style }}>{children}</div>;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────────────
-const emptyExp  = () => ({ title: "", company: "", location: "", start: "", end: "Present", bullets: "" });
-const emptyEdu  = () => ({ degree: "", institution: "", location: "", start: "", end: "", year: "", gpa: "" });
-const emptyProj = () => ({ name: "", tech: "", date: "", badge: "", bullets: "" });
-const emptyCert = () => ({ name: "", description: "" });
-const emptyStr  = () => ({ title: "", description: "" });
 
 function App() {
-  const [phase, setPhase]   = useState("template");
-  const [tmpl, setTmpl]     = useState("nithin");
-  const [step, setStep]     = useState(0);
+  const [phase, setPhase] = useState("form");
+  const [step, setStep] = useState(0);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiDone,    setAiDone]    = useState(false);
-  const [aiError,   setAiError]   = useState("");
+  const [aiDone, setAiDone] = useState(false);
+  const [aiError, setAiError] = useState("");
   const resumeRef = useRef(null);
+  
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
 
-  const [d, setD] = useState({
-    name: "", title: "", email: "", phone: "", location: "", linkedin: "", github: "",
-    summary: "",
-    education:      [emptyEdu()],
-    skills:         "",
-    projects:       [emptyProj()],
-    certifications: [emptyCert()],
-    strengths:      [emptyStr()],
-    experience:     [],
-    languages:      "",
+  const [groqKey, setGroqKey] = useState(import.meta.env.VITE_GROQ_API_KEY || "");
+  const [tmpl, setTmpl] = useState("nithin");
+  const [coverLetter, setCoverLetter] = useState("");
+  const [jobDesc, setJobDesc] = useState("");
+  
+  const [theme, setTheme] = useState(() => localStorage.getItem("resume_theme") || "light");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("resume_theme", theme);
+  }, [theme]);
+
+  const [isCustomMode, setIsCustomMode] = useState(false);
+
+  const [d, setD] = useState(() => {
+    return {
+      name: "", title: "", email: "", phone: "", location: "", linkedin: "", github: "",
+      summary: "",
+      education: [emptyEdu()],
+      skills: "",
+      projects: [emptyProj()],
+      certifications: [emptyCert()],
+      strengths: [emptyStr()],
+      experience: [],
+      languages: "",
+      sectionOrder: ['education', 'skills', 'projects', 'certifications', 'strengths', 'experience'],
+      customSections: []
+    };
   });
 
-  const set  = f  => v  => setD(x => ({ ...x, [f]: v }));
+  const set = f => v => setD(x => ({ ...x, [f]: v }));
   const setA = (f, i, k) => v => setD(x => {
     const arr = [...x[f]]; arr[i] = { ...arr[i], [k]: v }; return { ...x, [f]: arr };
   });
   const addA = (f, empty) => () => setD(x => ({ ...x, [f]: [...x[f], empty()] }));
-  const remA = (f, i)     => ()  => setD(x => ({ ...x, [f]: x[f].filter((_, j) => j !== i) }));
+  const remA = (f, i) => () => setD(x => ({ ...x, [f]: x[f].filter((_, j) => j !== i) }));
+
+  // ── Drag and Drop Reordering ───────────────────────────────────────────
+  const handleSort = () => {
+    // Only sort the dynamic middle sections, keep top and bottom intact
+    let newOrder = [...(d.sectionOrder || ['education', 'skills', 'projects', 'certifications', 'strengths', 'experience'])];
+    
+    const dragIdx = dragItem.current - 2; // Offset by 2 fixed top steps
+    const dropIdx = dragOverItem.current - 2;
+    
+    if (dragIdx >= 0 && dragIdx < newOrder.length && dropIdx >= 0 && dropIdx < newOrder.length) {
+      const draggedSection = newOrder.splice(dragIdx, 1)[0];
+      newOrder.splice(dropIdx, 0, draggedSection);
+      setD(x => ({ ...x, sectionOrder: newOrder }));
+    }
+    
+    dragItem.current = null;
+    dragOverItem.current = null;
+  };
+
+  // ── Handle PDF Import ──────────────────────────────────────────────────
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!groqKey) {
+      alert("Please add your Groq API Key in App Settings to use AI resume imports!");
+      return;
+    }
+
+    setPhase("importing");
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const base64Data = event.target.result.split(',')[1];
+          const extracted = await extractResumeFromPdfLocal(base64Data, groqKey);
+
+          setD({
+            name: extracted.name || "",
+            title: extracted.title || "",
+            email: extracted.email || "",
+            phone: extracted.phone || "",
+            location: extracted.location || "",
+            linkedin: extracted.linkedin || "",
+            github: extracted.github || "",
+            summary: extracted.summary || "",
+            skills: extracted.skills || "",
+            languages: extracted.languages || "",
+            education: (extracted.education && extracted.education.length) ? extracted.education : [emptyEdu()],
+            projects: (extracted.projects && extracted.projects.length) ? extracted.projects : [emptyProj()],
+            certifications: (extracted.certifications && extracted.certifications.length) ? extracted.certifications : [emptyCert()],
+            strengths: (extracted.strengths && extracted.strengths.length) ? extracted.strengths : [emptyStr()],
+            experience: extracted.experience || [],
+          });
+          setPhase("form");
+        } catch (err) {
+          alert("Error analyzing PDF: " + err.message);
+          setPhase("template");
+        }
+      };
+      reader.onerror = () => {
+        alert("Failed to read file.");
+        setPhase("template");
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      alert("Error starting file read.");
+      setPhase("template");
+    }
+  };
 
   // ── Auto-generate summary when entering preview ────────────────────────
   const enterPreview = async () => {
     setPhase("preview");
     if (d.summary || aiDone) return;
-    if (GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") {
-      setAiError("Add your API key at the top of the file to enable AI summary generation.");
+    if (!groqKey) {
+      setAiError("Add your API key in App Settings to enable AI summary generation.");
       return;
     }
     setAiLoading(true); setAiError("");
     try {
-      const s = await generateSummaryAI(d);
+      const s = await generateSummaryAI(d, groqKey);
       setD(x => ({ ...x, summary: s }));
       setAiDone(true);
     } catch (e) {
@@ -507,6 +686,11 @@ function App() {
   if (phase === "template") {
     return (
       <div style={APP}>
+        <div style={{ position: "absolute", top: 20, right: 24 }}>
+          <Btn v="secondary" sm onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>
+            {theme === 'light' ? '🌙 Dark Mode' : '☀️ Light Mode'}
+          </Btn>
+        </div>
         <div style={{ maxWidth: 680, margin: "0 auto", padding: "60px 20px" }}>
           <div style={{ textAlign: "center", marginBottom: 44 }}>
             <div style={{ fontSize: 10, letterSpacing: "0.22em", color: "#6366f1", textTransform: "uppercase", marginBottom: 10 }}>
@@ -546,11 +730,36 @@ function App() {
             ))}
           </div>
 
-          <div style={{ textAlign: "center", marginTop: 30 }}>
-            <Btn onClick={() => setPhase("form")}>
+          <div style={{ display: "flex", justifyContent: "center", gap: 15, marginTop: 30 }}>
+            <Btn onClick={() => { setIsCustomMode(false); setPhase("form"); }}>
               Start with {TEMPLATES.find(t => t.id === tmpl)?.name} →
             </Btn>
+            <div style={{ position: "relative" }}>
+              <Btn v="secondary" onClick={() => document.getElementById('pdf-upload').click()}>
+                Import PDF Resume
+              </Btn>
+              <input id="pdf-upload" type="file" accept="application/pdf" style={{ display: "none" }} onChange={handlePdfUpload} />
+            </div>
+            <Btn v="ghost" onClick={() => { setIsCustomMode(true); setPhase("form"); }}>
+              ✨ Design from Scratch
+            </Btn>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // IMPORTING PHASE
+  // ─────────────────────────────────────────────────────────────────────
+  if (phase === "importing") {
+    return (
+      <div style={{ ...APP, justifyContent: "center", alignItems: "center" }}>
+        <div style={{ textAlign: "center", background: "var(--bg-card)", border: "1px solid var(--border-main)", padding: "40px 60px", borderRadius: 12 }}>
+          <div style={{ fontSize: 40, marginBottom: 15 }}>📄✨</div>
+          <h2 style={{ margin: "0 0 10px 0", color: "var(--text-main)" }}>Analyzing your Resume...</h2>
+          <p style={{ color: "var(--text-muted)", margin: 0 }}>Extracting details and formatting to {TEMPLATES.find(t => t.id === tmpl)?.name}</p>
+          <div style={{ marginTop: 25, fontSize: 13, color: "#6366f1" }}>This might take a few seconds. We're filling the form fields for you...</div>
         </div>
       </div>
     );
@@ -560,177 +769,34 @@ function App() {
   // FORM PHASE
   // ─────────────────────────────────────────────────────────────────────
   if (phase === "form") {
-    const s = STEPS[step];
+    const activeSteps = getSteps(d.sectionOrder || [], d.customSections || [], isCustomMode);
+    const s = activeSteps[step] || activeSteps[0];
 
     const body = () => {
+      if (s.isCustom) {
+        return (
+          <CustomModeForm 
+            sectionData={d.customSections[s.index] || {}} 
+            updateSection={(newSec) => {
+              const clone = [...(d.customSections || [])];
+              clone[s.index] = newSec;
+              setD(x => ({ ...x, customSections: clone }));
+            }} 
+          />
+        );
+      }
       switch (s.id) {
         // ── Personal ─────────────────────────────────────────────────
-        case "personal": return (
-          <div>
-            <Input label="Full Name *" value={d.name} onChange={set("name")} placeholder="Nithin Kumar S" />
-            <Input label="Professional Title" value={d.title} onChange={set("title")} placeholder="Backend Developer · Computer Science Student" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="Phone" value={d.phone} onChange={set("phone")} placeholder="+91 70192 43498" />
-              <Input label="Email" value={d.email} onChange={set("email")} placeholder="you@gmail.com" />
-            </div>
-            <Input label="LinkedIn (full URL or handle)" value={d.linkedin} onChange={set("linkedin")} placeholder="linkedin.com/in/yourname" />
-            <Input label="GitHub" value={d.github} onChange={set("github")} placeholder="github.com/yourname" />
-            <Input label="Location" value={d.location} onChange={set("location")} placeholder="Bengaluru, India" />
-          </div>
-        );
-
-        // ── Education ────────────────────────────────────────────────
-        case "education": return (
-          <div>
-            {d.education.map((e, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#7a90a8" }}>Education #{i + 1}</span>
-                  {d.education.length > 1 && <Btn v="danger" sm onClick={remA("education", i)}>✕</Btn>}
-                </div>
-                <Input label="Institution" value={e.institution} onChange={setA("education", i, "institution")} placeholder="The Oxford College of Engineering" />
-                <Input label="Degree / Programme" value={e.degree} onChange={setA("education", i, "degree")} placeholder="Bachelor of Engineering in Computer Science" />
-                <Input label="Location" value={e.location} onChange={setA("education", i, "location")} placeholder="Bengaluru, India" />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  <Input label="Start" value={e.start} onChange={setA("education", i, "start")} placeholder="Sep 2023" />
-                  <Input label="End / Expected" value={e.end} onChange={setA("education", i, "end")} placeholder="Aug 2027" />
-                  <Input label="GPA (opt)" value={e.gpa} onChange={setA("education", i, "gpa")} placeholder="8.7 / 10" />
-                </div>
-              </Card>
-            ))}
-            <Btn v="ghost" onClick={addA("education", emptyEdu)}>+ Add Education</Btn>
-          </div>
-        );
-
-        // ── Skills ───────────────────────────────────────────────────
-        case "skills": return (
-          <div>
-            <Input
-              label="Technical Skills"
-              value={d.skills}
-              onChange={set("skills")}
-              rows={9}
-              placeholder={`Backend & APIs: Node.js, Express.js, RESTful APIs, Microservices\nLanguages: JavaScript, TypeScript, Python, Java, C, C++\nDatabases: MongoDB, PostgreSQL, MySQL, Redis\nCloud & Infrastructure: AWS, Docker, Distributed Systems\nAI/ML: Machine Learning, LLM Integration, Groq, Mixtral\nTools & Frameworks: Git, Linux, React, Next.js, CI/CD`}
-              hint="Format: Category: skill1, skill2  — one category per line. Each category:items pair renders in bold + normal text like Nithin's resume."
-            />
-          </div>
-        );
-
-        // ── Projects ─────────────────────────────────────────────────
-        case "projects": return (
-          <div>
-            {d.projects.map((p, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#7a90a8" }}>Project #{i + 1}</span>
-                  {d.projects.length > 1 && <Btn v="danger" sm onClick={remA("projects", i)}>✕</Btn>}
-                </div>
-                <Input label="Project Name *" value={p.name} onChange={setA("projects", i, "name")} placeholder="AI-Driven Investment Advisor Chatbot" />
-                <Input label="Tech Stack" value={p.tech} onChange={setA("projects", i, "tech")} placeholder="Next.js, Node.js, TypeScript, Groq AI, REST APIs" />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <Input label="Date / Period" value={p.date} onChange={setA("projects", i, "date")} placeholder="Dec 2024" />
-                  <Input label="Badge / Status" value={p.badge} onChange={setA("projects", i, "badge")} placeholder="Patent Filed  /  IEEE Published" hint="Shows right-aligned next to the name" />
-                </div>
-                <Input label="Bullet Points (one per line)" value={p.bullets} onChange={setA("projects", i, "bullets")} rows={4}
-                  placeholder="Architected full-stack system with Node.js backend for financial guidance&#10;Designed REST API with 99.9% uptime and secure authentication&#10;Built PDF export, session management, anomaly detection" />
-              </Card>
-            ))}
-            <Btn v="ghost" onClick={addA("projects", emptyProj)}>+ Add Project</Btn>
-          </div>
-        );
-
-        // ── Certifications ───────────────────────────────────────────
-        case "certifications": return (
-          <div>
-            {d.certifications.map((c, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#7a90a8" }}>Certification #{i + 1}</span>
-                  {d.certifications.length > 1 && <Btn v="danger" sm onClick={remA("certifications", i)}>✕</Btn>}
-                </div>
-                <Input label="Certification Name" value={c.name} onChange={setA("certifications", i, "name")} placeholder="AWS APAC Solutions Architecture Job Simulation" />
-                <Input label="Brief Description" value={c.description} onChange={setA("certifications", i, "description")}
-                  placeholder="Cloud architecture, distributed systems, infrastructure design, scalability" rows={2} />
-              </Card>
-            ))}
-            <Btn v="ghost" onClick={addA("certifications", emptyCert)}>+ Add Certification</Btn>
-          </div>
-        );
-
-        // ── Key Strengths ────────────────────────────────────────────
-        case "strengths": return (
-          <div>
-            <div style={{ fontSize: 12, color: "#4a6080", marginBottom: 14 }}>
-              These render as <strong style={{ color: "#7a90a8" }}>Bold Title: description</strong> lines — great for soft/meta skills like Nithin's "System Architecture", "API Development", etc.
-            </div>
-            {d.strengths.map((s, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#7a90a8" }}>Strength #{i + 1}</span>
-                  {d.strengths.length > 1 && <Btn v="danger" sm onClick={remA("strengths", i)}>✕</Btn>}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10 }}>
-                  <Input label="Title" value={s.title} onChange={setA("strengths", i, "title")} placeholder="System Architecture" />
-                  <Input label="One-line description" value={s.description} onChange={setA("strengths", i, "description")} placeholder="Experience designing scalable, reliable backend systems focused on performance" />
-                </div>
-              </Card>
-            ))}
-            <Btn v="ghost" onClick={addA("strengths", emptyStr)}>+ Add Strength</Btn>
-            <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #1a2232" }}>
-              <Input label="Languages (optional)" value={d.languages} onChange={set("languages")}
-                placeholder="English (Full Professional), Kannada (Native), Hindi, Tamil (Working Proficiency)" />
-            </div>
-          </div>
-        );
-
-        // ── Experience ───────────────────────────────────────────────
-        case "experience": return (
-          <div>
-            <div style={{ fontSize: 12, color: "#4a6080", marginBottom: 12 }}>
-              Optional — skip if you only have projects (like Nithin's resume).
-            </div>
-            {d.experience.length === 0 && (
-              <Btn v="ghost" onClick={addA("experience", emptyExp)}>+ Add Work Experience</Btn>
-            )}
-            {d.experience.map((e, i) => (
-              <Card key={i}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#7a90a8" }}>Role #{i + 1}</span>
-                  <Btn v="danger" sm onClick={remA("experience", i)}>✕ Remove</Btn>
-                </div>
-                <Input label="Job Title" value={e.title} onChange={setA("experience", i, "title")} placeholder="Software Engineer Intern" />
-                <Input label="Company" value={e.company} onChange={setA("experience", i, "company")} placeholder="Infosys" />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  <Input label="Location" value={e.location} onChange={setA("experience", i, "location")} placeholder="Remote" />
-                  <Input label="Start" value={e.start} onChange={setA("experience", i, "start")} placeholder="Jun 2024" />
-                  <Input label="End" value={e.end} onChange={setA("experience", i, "end")} placeholder="Present" />
-                </div>
-                <Input label="Achievements (one per line)" value={e.bullets} onChange={setA("experience", i, "bullets")} rows={4}
-                  placeholder="Built REST APIs serving 500k+ daily requests&#10;Reduced DB query time by 35% with indexing" />
-              </Card>
-            ))}
-            {d.experience.length > 0 && (
-              <Btn v="ghost" onClick={addA("experience", emptyExp)}>+ Add Another Role</Btn>
-            )}
-          </div>
-        );
-
-        // ── Preview gate ──────────────────────────────────────────────
-        case "preview": return (
-          <div>
-            <Card style={{ border: "1px solid #1e3a1e" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#4ade80", marginBottom: 8 }}>✅ All set!</div>
-              <div style={{ fontSize: 12.5, color: "#7a90a8", lineHeight: 1.6 }}>
-                Clicking below will open the full A4 preview.
-                {GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY_HERE"
-                  ? " Your Professional Summary will be auto-generated by Claude AI."
-                  : " Add your API key to the top of the file to enable AI summary generation."}
-              </div>
-            </Card>
-            <Btn full onClick={enterPreview}>🚀 Generate &amp; Preview Resume →</Btn>
-          </div>
-        );
-
+        case "settings": return <Settings groqKey={groqKey} setGroqKey={setGroqKey} />;
+        case "personal": return <Personal d={d} set={set} />;
+        case "education": return <Education d={d} setA={setA} addA={addA} remA={remA} />;
+        case "skills": return <Skills d={d} set={set} />;
+        case "projects": return <Projects d={d} setA={setA} addA={addA} remA={remA} />;
+        case "certifications": return <Certifications d={d} setA={setA} addA={addA} remA={remA} />;
+        case "strengths": return <Strengths d={d} set={set} setA={setA} addA={addA} remA={remA} />;
+        case "experience": return <Experience d={d} setA={setA} addA={addA} remA={remA} />;
+        case "coverletter": return <CoverLetter d={d} groqKey={groqKey} coverLetter={coverLetter} setCoverLetter={setCoverLetter} jobDesc={jobDesc} setJobDesc={setJobDesc} />;
+        case "preview": return <PreviewGate GROQ_API_KEY={groqKey} enterPreview={enterPreview} />;
         default: return null;
       }
     };
@@ -738,25 +804,74 @@ function App() {
     return (
       <div style={{ ...APP, flexDirection: "row", height: "100vh", overflow: "hidden" }}>
         {/* Sidebar */}
-        <div style={{ width: 200, background: "#060810", borderRight: "1px solid #1a2232", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <div style={{ padding: "18px 14px", borderBottom: "1px solid #1a2232" }}>
+        <div style={{ width: 200, background: "var(--bg-sidebar)", borderRight: "1px solid var(--border-main)", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          <div style={{ padding: "18px 14px", borderBottom: "1px solid var(--border-main)" }}>
             <div style={{ fontSize: 9.5, letterSpacing: "0.18em", color: "#4f46e5", textTransform: "uppercase" }}>Resume Builder</div>
-            <div style={{ fontSize: 11.5, color: "#4a6080", marginTop: 2 }}>{TEMPLATES.find(t => t.id === tmpl)?.name}</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-dimer)", marginTop: 2 }}>{TEMPLATES.find(t => t.id === tmpl)?.name}</div>
           </div>
           <div style={{ flex: 1, paddingTop: 6, overflowY: "auto" }}>
-            {STEPS.map((s2, i) => (
-              <div key={s2.id} onClick={() => setStep(i)} style={{
-                padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-                background: step === i ? "#0e1520" : "transparent",
-                borderLeft: step === i ? "2px solid #6366f1" : "2px solid transparent",
-                color: step === i ? "#dde3ec" : "#3a5070",
-                fontSize: 12.5, fontWeight: step === i ? 600 : 400, transition: "all 0.12s",
-              }}>
-                <span style={{ fontSize: 13 }}>{s2.icon}</span> {s2.label}
-              </div>
-            ))}
+            {(() => {
+              const renderStepItem = (s2, i) => {
+                if (!s2) return null;
+                const isDraggable = !isCustomMode && i >= 2 && i < activeSteps.length - 2;
+                return (
+                  <div 
+                    key={s2.id} 
+                    onClick={() => setStep(i)} 
+                    draggable={isDraggable}
+                    onDragStart={(e) => { dragItem.current = i; }}
+                    onDragEnter={(e) => { dragOverItem.current = i; }}
+                    onDragEnd={handleSort}
+                    onDragOver={(e) => e.preventDefault()}
+                    style={{
+                      padding: "8px 14px", cursor: isDraggable ? "grab" : "pointer", display: "flex", alignItems: "center", gap: 8,
+                      background: step === i ? "var(--bg-active)" : "transparent",
+                      borderLeft: step === i ? "2px solid #6366f1" : "2px solid transparent",
+                      color: step === i ? "var(--text-main)" : "var(--text-dim)",
+                      fontSize: 12.5, fontWeight: step === i ? 600 : 400, transition: "all 0.12s",
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>{s2.icon}</span> 
+                    <span style={{ flex: 1 }}>{s2.label}</span>
+                    {isDraggable && <span style={{ fontSize: 10, opacity: 0.3 }}>&nbsp;↕</span>}
+                  </div>
+                );
+              };
+
+              return (
+                <>
+                  {renderStepItem(activeSteps[0], 0)}
+                  
+                  <div style={{ background: "var(--bg-pane)", margin: "8px", borderRadius: "8px", border: "1px solid var(--border-main)", overflow: "hidden", paddingBottom: "4px" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, padding: "10px 14px 4px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Resume Content</div>
+                    {renderStepItem(activeSteps[1], 1)}
+                    
+                    {activeSteps.slice(2, -2).map((s2, idx) => renderStepItem(s2, idx + 2))}
+                    
+                    {isCustomMode && (
+                      <div style={{ padding: "8px 14px" }}>
+                        <Btn 
+                          v="secondary" 
+                          full 
+                          onClick={() => {
+                            const curr = d.customSections || [];
+                            setD(x => ({ ...x, customSections: [...curr, { headingTitle: "New Section", items: [] }] }));
+                            setStep(activeSteps.length - 2); // Navigate to new step
+                          }}
+                        >
+                          + Add Section
+                        </Btn>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {renderStepItem(activeSteps[activeSteps.length - 2], activeSteps.length - 2)}
+                  {renderStepItem(activeSteps[activeSteps.length - 1], activeSteps.length - 1)}
+                </>
+              );
+            })()}
           </div>
-          <div style={{ padding: "10px 14px", borderTop: "1px solid #1a2232" }}>
+          <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border-main)" }}>
             <div onClick={() => setPhase("template")} style={{ fontSize: 11.5, color: "#3a5070", cursor: "pointer" }}>← Templates</div>
           </div>
         </div>
@@ -769,7 +884,7 @@ function App() {
           {body()}
           <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
             {step > 0 && <Btn v="secondary" onClick={() => setStep(x => x - 1)}>← Back</Btn>}
-            {step < STEPS.length - 1 && <Btn onClick={() => setStep(x => x + 1)}>Next →</Btn>}
+            {step < activeSteps.length - 1 && <Btn onClick={() => setStep(x => x + 1)}>Next →</Btn>}
           </div>
         </div>
 
@@ -781,7 +896,7 @@ function App() {
           </div>
           <div style={{ flex: 1, overflow: "hidden", display: "flex", justifyContent: "center", padding: "16px 8px" }}>
             <div style={{ transform: "scale(0.50)", transformOrigin: "top center", width: "210mm", pointerEvents: "none" }}>
-              <ResumeDocument data={d} template={tmpl} />
+              <ResumeDocument data={d} template={tmpl} isCustomMode={isCustomMode} />
             </div>
           </div>
         </div>
@@ -820,13 +935,13 @@ function App() {
         )}
 
         <SL>Personal</SL>
-        <Input label="Name"     value={d.name}     onChange={set("name")}     placeholder="Full Name" />
-        <Input label="Title"    value={d.title}    onChange={set("title")}    placeholder="Job Title" />
-        <Input label="Email"    value={d.email}    onChange={set("email")}    placeholder="Email" />
-        <Input label="Phone"    value={d.phone}    onChange={set("phone")}    placeholder="Phone" />
+        <Input label="Name" value={d.name} onChange={set("name")} placeholder="Full Name" />
+        <Input label="Title" value={d.title} onChange={set("title")} placeholder="Job Title" />
+        <Input label="Email" value={d.email} onChange={set("email")} placeholder="Email" />
+        <Input label="Phone" value={d.phone} onChange={set("phone")} placeholder="Phone" />
         <Input label="Location" value={d.location} onChange={set("location")} placeholder="City" />
         <Input label="LinkedIn" value={d.linkedin} onChange={set("linkedin")} placeholder="linkedin.com/in/…" />
-        <Input label="GitHub"   value={d.github}   onChange={set("github")}   placeholder="github.com/…" />
+        <Input label="GitHub" value={d.github} onChange={set("github")} placeholder="github.com/…" />
 
         <SL>Skills</SL>
         <Input label="Technical Skills (Category: items per line)" value={d.skills} onChange={set("skills")} rows={5} />
@@ -834,28 +949,28 @@ function App() {
         <SL>Professional Summary</SL>
         <Input label="Summary (AI-generated — edit freely)" value={d.summary} onChange={set("summary")} rows={4}
           placeholder={aiLoading ? "Generating with AI..." : "Will be auto-generated by AI on preview..."} />
-        {!aiLoading && !aiDone && GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY_HERE" && (
+        {!aiLoading && !aiDone && !!groqKey && (
           <Btn sm v="ghost" onClick={enterPreview} loading={aiLoading}>✨ Regenerate Summary</Btn>
         )}
 
         {d.projects.map((p, i) => (
           <div key={i}>
             <SL>Project {i + 1}{p.name ? `: ${p.name.slice(0, 22)}…` : ""}</SL>
-            <Input label="Name"       value={p.name}    onChange={setA("projects", i, "name")}    placeholder="Project name" />
-            <Input label="Tech"       value={p.tech}    onChange={setA("projects", i, "tech")}    placeholder="Stack" />
+            <Input label="Name" value={p.name} onChange={setA("projects", i, "name")} placeholder="Project name" />
+            <Input label="Tech" value={p.tech} onChange={setA("projects", i, "tech")} placeholder="Stack" />
             <Input label="Date/Badge" value={p.badge || p.date} onChange={v => { setA("projects", i, "badge")(v); setA("projects", i, "date")(v); }} placeholder="Dec 2024" />
-            <Input label="Bullets"    value={p.bullets} onChange={setA("projects", i, "bullets")} rows={3} placeholder="Achievement bullets" />
+            <Input label="Bullets" value={p.bullets} onChange={setA("projects", i, "bullets")} rows={3} placeholder="Achievement bullets" />
           </div>
         ))}
 
         {d.experience.length > 0 && d.experience.map((e, i) => (
           <div key={i}>
             <SL>Experience {i + 1}</SL>
-            <Input label="Title"   value={e.title}   onChange={setA("experience", i, "title")}   placeholder="Job Title" />
+            <Input label="Title" value={e.title} onChange={setA("experience", i, "title")} placeholder="Job Title" />
             <Input label="Company" value={e.company} onChange={setA("experience", i, "company")} placeholder="Company" />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Input label="Start" value={e.start} onChange={setA("experience", i, "start")} placeholder="Jan 2024" />
-              <Input label="End"   value={e.end}   onChange={setA("experience", i, "end")}   placeholder="Present" />
+              <Input label="End" value={e.end} onChange={setA("experience", i, "end")} placeholder="Present" />
             </div>
             <Input label="Bullets" value={e.bullets} onChange={setA("experience", i, "bullets")} rows={3} />
           </div>
@@ -886,7 +1001,7 @@ function App() {
         <div style={{ flex: 1, display: "flex", justifyContent: "center", padding: "32px 24px" }}>
           <div style={{ boxShadow: "0 24px 70px rgba(0,0,0,0.75)", borderRadius: 2 }}>
             <div ref={resumeRef}>
-              <ResumeDocument data={d} template={tmpl} />
+              <ResumeDocument data={d} template={tmpl} isCustomMode={isCustomMode} />
             </div>
           </div>
         </div>
@@ -897,8 +1012,8 @@ function App() {
 
 const APP = {
   display: "flex", flexDirection: "column", minHeight: "100vh",
-  background: "#07090e",
+  background: "var(--bg-app)",
   fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif",
-  color: "#dde3ec",
+  color: "var(--text-main)",
 };
 export default App;

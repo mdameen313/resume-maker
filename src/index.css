@@ -1,16 +1,55 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  /* Premium Light Theme */
+  --bg-app: #eef2f6;
+  --bg-sidebar: #f8fafc;
+  --bg-pane: #f1f5f9;
+  --bg-active: #e2e8f0;
+  --bg-card: #ffffff;
+  --bg-preview: #cbd5e1;
+  --bg-input: #ffffff;
+  --bg-btn-secondary: #e2e8f0;
+  --bg-btn-dark: #334155;
+  --border-main: #cbd5e1;
+  --border-input: #94a3b8;
+  --text-main: #0f172a;
+  --text-muted: #334155;
+  --text-dim: #475569;
+  --text-dimer: #64748b;
+  
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  color: var(--text-main);
+  background-color: var(--bg-app);
+}
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+[data-theme="dark"] {
+  /* Dark Theme */
+  --bg-app: #07090e;
+  --bg-sidebar: #060810;
+  --bg-pane: #090c12;
+  --bg-active: #0e1520;
+  --bg-card: #090d13;
+  --bg-preview: #0e1219;
+  --bg-input: #0c0f15;
+  --bg-btn-secondary: #151c27;
+  --bg-btn-dark: #0c0f15;
+  --border-main: #1a2232;
+  --border-input: #1e2a3a;
+  --text-main: #dde3ec;
+  --text-muted: #7a90a8;
+  --text-dim: #3a5070;
+  --text-dimer: #4a6080;
+}
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 a {
@@ -22,47 +61,6 @@ a:hover {
   color: #535bf2;
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
 h1 {
-  font-size: 3.2em;
   line-height: 1.1;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
 }
